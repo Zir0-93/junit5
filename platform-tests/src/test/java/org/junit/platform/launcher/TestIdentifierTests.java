@@ -56,11 +56,13 @@ class TestIdentifierTests {
 
 	@Test
 	void serialization() throws Exception {
+		var parentId = UniqueId.forEngine("engine");
+		var uniqueId = parentId.append("child", "child");
 		var identifier = serializeAndDeserialize(//
-			new TestIdentifier("uniqueId", "displayName", ClassSource.from(TestIdentifierTests.class),
-				Set.of(TestTag.create("aTag")), TestDescriptor.Type.TEST, "parentId", "reportingName"));
+			new TestIdentifier(uniqueId, "displayName", ClassSource.from(TestIdentifierTests.class),
+				Set.of(TestTag.create("aTag")), TestDescriptor.Type.TEST, parentId, "reportingName"));
 
-		assertEquals("uniqueId", identifier.getUniqueId());
+		assertEquals(uniqueId.toString(), identifier.getUniqueId());
 		assertEquals("displayName", identifier.getDisplayName());
 		assertEquals("reportingName", identifier.getLegacyReportingName());
 		assertThat(identifier.getSource()).contains(ClassSource.from(TestIdentifierTests.class));
@@ -68,7 +70,7 @@ class TestIdentifierTests {
 		assertEquals(TestDescriptor.Type.TEST, identifier.getType());
 		assertTrue(identifier.isTest());
 		assertFalse(identifier.isContainer());
-		assertThat(identifier.getParentId()).contains("parentId");
+		assertThat(identifier.getParentId()).contains(parentId.toString());
 	}
 
 }

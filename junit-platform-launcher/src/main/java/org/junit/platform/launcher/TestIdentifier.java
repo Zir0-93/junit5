@@ -10,10 +10,18 @@
 
 package org.junit.platform.launcher;
 
+import static java.util.Collections.emptySet;
+import static java.util.Collections.singleton;
 import static java.util.Collections.unmodifiableSet;
 import static org.apiguardian.api.API.Status.INTERNAL;
 import static org.apiguardian.api.API.Status.STABLE;
+import static org.junit.platform.commons.util.CollectionUtils.getOnlyElement;
 
+import java.io.IOException;
+import java.io.ObjectInputStream;
+import java.io.ObjectOutputStream;
+import java.io.ObjectStreamClass;
+import java.io.ObjectStreamField;
 import java.io.Serializable;
 import java.util.LinkedHashSet;
 import java.util.Objects;
@@ -27,21 +35,27 @@ import org.junit.platform.engine.TestDescriptor;
 import org.junit.platform.engine.TestDescriptor.Type;
 import org.junit.platform.engine.TestSource;
 import org.junit.platform.engine.TestTag;
+import org.junit.platform.engine.UniqueId;
 
 /**
  * Immutable data transfer object that represents a test or container which is
  * usually part of a {@link TestPlan}.
  *
- * @since 1.0
  * @see TestPlan
+ * @since 1.0
  */
 @API(status = STABLE, since = "1.0")
 public final class TestIdentifier implements Serializable {
 
 	private static final long serialVersionUID = 1L;
+	private static final ObjectStreamField[] serialPersistentFields = ObjectStreamClass.lookup(
+		SerializedForm.class).getFields();
 
-	private final String uniqueId;
-	private final String parentId;
+	// Only set during deserialization process
+	private SerializedForm serializedForm;
+
+	private final UniqueId uniqueId;
+	private final UniqueId parentId;
 	private final String displayName;
 	private final String legacyReportingName;
 	private final TestSource source;
@@ -54,27 +68,43 @@ public final class TestIdentifier implements Serializable {
 	@API(status = INTERNAL, since = "1.0")
 	public static TestIdentifier from(TestDescriptor testDescriptor) {
 		Preconditions.notNull(testDescriptor, "TestDescriptor must not be null");
-		String uniqueId = testDescriptor.getUniqueId().toString();
+		UniqueId uniqueId = testDescriptor.getUniqueId();
 		String displayName = testDescriptor.getDisplayName();
 		TestSource source = testDescriptor.getSource().orElse(null);
 		Set<TestTag> tags = testDescriptor.getTags();
 		Type type = testDescriptor.getType();
-		String parentId = testDescriptor.getParent().map(
-			parentDescriptor -> parentDescriptor.getUniqueId().toString()).orElse(null);
+		UniqueId parentId = testDescriptor.getParent().map(TestDescriptor::getUniqueId).orElse(null);
 		String legacyReportingName = testDescriptor.getLegacyReportingName();
 		return new TestIdentifier(uniqueId, displayName, source, tags, type, parentId, legacyReportingName);
 	}
 
-	TestIdentifier(String uniqueId, String displayName, TestSource source, Set<TestTag> tags, Type type,
-			String parentId, String legacyReportingName) {
+	private TestIdentifier(SerializedForm serializedForm) {
+		this(UniqueId.parse(serializedForm.uniqueId), serializedForm.displayName, serializedForm.source,
+			serializedForm.tags, serializedForm.type, UniqueId.parse(serializedForm.parentId),
+			serializedForm.legacyReportingName);
+	}
+
+	TestIdentifier(UniqueId uniqueId, String displayName, TestSource source, Set<TestTag> tags, Type type,
+			UniqueId parentId, String legacyReportingName) {
 		Preconditions.notNull(type, "TestDescriptor.Type must not be null");
 		this.uniqueId = uniqueId;
 		this.parentId = parentId;
 		this.displayName = displayName;
 		this.source = source;
-		this.tags = unmodifiableSet(new LinkedHashSet<>(tags));
+		this.tags = copyOf(tags);
 		this.type = type;
 		this.legacyReportingName = legacyReportingName;
+	}
+
+	private Set<TestTag> copyOf(Set<TestTag> tags) {
+		switch (tags.size()) {
+			case 0:
+				return emptySet();
+			case 1:
+				return singleton(getOnlyElement(tags));
+			default:
+				return new LinkedHashSet<>(tags);
+		}
 	}
 
 	/**
@@ -87,6 +117,10 @@ public final class TestIdentifier implements Serializable {
 	 * @return the unique ID for this identifier; never {@code null}
 	 */
 	public String getUniqueId() {
+		return this.uniqueId.toString();
+	}
+
+	public UniqueId getUniqueIdObject() {
 		return this.uniqueId;
 	}
 
@@ -99,6 +133,10 @@ public final class TestIdentifier implements Serializable {
 	 * never {@code null} though potentially <em>empty</em>
 	 */
 	public Optional<String> getParentId() {
+		return Optional.ofNullable(this.parentId).map(UniqueId::toString);
+	}
+
+	public Optional<UniqueId> getParentIdObject() {
 		return Optional.ofNullable(this.parentId);
 	}
 
@@ -184,7 +222,7 @@ public final class TestIdentifier implements Serializable {
 	 * @see TestTag
 	 */
 	public Set<TestTag> getTags() {
-		return this.tags;
+		return unmodifiableSet(this.tags);
 	}
 
 	@Override
@@ -204,16 +242,84 @@ public final class TestIdentifier implements Serializable {
 	@Override
 	public String toString() {
 		// @formatter:off
-		return new ToStringBuilder(this)
-				.append("uniqueId", this.uniqueId)
-				.append("parentId", this.parentId)
-				.append("displayName", this.displayName)
-				.append("legacyReportingName", this.legacyReportingName)
-				.append("source", this.source)
-				.append("tags", this.tags)
-				.append("type", this.type)
-				.toString();
-		// @formatter:on
+        return new ToStringBuilder(this)
+                .append("uniqueId", this.uniqueId)
+                .append("parentId", this.parentId)
+                .append("displayName", this.displayName)
+                .append("legacyReportingName", this.legacyReportingName)
+                .append("source", this.source)
+                .append("tags", this.tags)
+                .append("type", this.type)
+                .toString();
+        // @formatter:on
+	}
+
+	private void writeObject(ObjectOutputStream s) throws IOException {
+		SerializedForm serializedForm = new SerializedForm(this);
+		serializedForm.serialize(s);
+	}
+
+	private void readObject(ObjectInputStream s) throws ClassNotFoundException, IOException {
+		serializedForm = SerializedForm.deserialize(s);
+	}
+
+	private Object readResolve() {
+		return new TestIdentifier(serializedForm);
+	}
+
+	/**
+	 * Represents the serialized output of {@code TestIdentifier}. The fields on this
+	 * class match the files that {@code TestIdentifier} had prior to 5.8.
+	 */
+	private static class SerializedForm implements Serializable {
+
+		private static final long serialVersionUID = 1L;
+
+		private final String uniqueId;
+		private final String parentId;
+		private final String displayName;
+		private final String legacyReportingName;
+		private final TestSource source;
+		private final Set<TestTag> tags;
+		private final Type type;
+
+		public SerializedForm(TestIdentifier testIdentifier) {
+			this.uniqueId = testIdentifier.uniqueId.toString();
+			this.parentId = testIdentifier.parentId.toString();
+			this.displayName = testIdentifier.displayName;
+			this.legacyReportingName = testIdentifier.legacyReportingName;
+			this.source = testIdentifier.source;
+			this.tags = testIdentifier.tags;
+			this.type = testIdentifier.type;
+		}
+
+		@SuppressWarnings("unchecked")
+		private SerializedForm(ObjectInputStream.GetField fields) throws IOException {
+			this.uniqueId = (String) fields.get("uniqueId", null);
+			this.parentId = (String) fields.get("parentId", null);
+			this.displayName = (String) fields.get("displayName", null);
+			this.legacyReportingName = (String) fields.get("legacyReportingName", null);
+			this.source = (TestSource) fields.get("source", null);
+			this.tags = (Set<TestTag>) fields.get("tags", null);
+			this.type = (Type) fields.get("type", null);
+		}
+
+		public void serialize(ObjectOutputStream s) throws IOException {
+			ObjectOutputStream.PutField fields = s.putFields();
+			fields.put("uniqueId", uniqueId);
+			fields.put("parentId", parentId);
+			fields.put("displayName", displayName);
+			fields.put("legacyReportingName", legacyReportingName);
+			fields.put("source", source);
+			fields.put("tags", tags);
+			fields.put("type", type);
+			s.writeFields();
+		}
+
+		public static SerializedForm deserialize(ObjectInputStream s) throws ClassNotFoundException, IOException {
+			ObjectInputStream.GetField fields = s.readFields();
+			return new SerializedForm(fields);
+		}
 	}
 
 }

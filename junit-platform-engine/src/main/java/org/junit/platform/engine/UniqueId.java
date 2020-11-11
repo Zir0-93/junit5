@@ -15,6 +15,7 @@ import static java.util.Collections.unmodifiableList;
 import static org.apiguardian.api.API.Status.STABLE;
 
 import java.io.Serializable;
+import java.lang.ref.SoftReference;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
@@ -85,11 +86,10 @@ public class UniqueId implements Cloneable, Serializable {
 	// lazily computed
 	private transient int hashCode;
 	// lazily computed
-	private transient String toString;
+	private transient SoftReference<String> toString;
 
 	private UniqueId(UniqueIdFormat uniqueIdFormat, Segment segment) {
-		this.uniqueIdFormat = uniqueIdFormat;
-		this.segments = singletonList(segment);
+		this(uniqueIdFormat, singletonList(segment));
 	}
 
 	/**
@@ -100,8 +100,8 @@ public class UniqueId implements Cloneable, Serializable {
 	 * to the list instance that they pass into this constructor.
 	 */
 	UniqueId(UniqueIdFormat uniqueIdFormat, List<Segment> segments) {
-		this.uniqueIdFormat = uniqueIdFormat;
-		this.segments = unmodifiableList(segments);
+		this.uniqueIdFormat = uniqueIdFormat == UniqueIdFormat.getDefault() ? null : uniqueIdFormat;
+		this.segments = segments;
 	}
 
 	final Optional<Segment> getRoot() {
@@ -122,7 +122,7 @@ public class UniqueId implements Cloneable, Serializable {
 	 * {@code UniqueId}.
 	 */
 	public final List<Segment> getSegments() {
-		return this.segments;
+		return unmodifiableList(this.segments);
 	}
 
 	/**
@@ -156,7 +156,8 @@ public class UniqueId implements Cloneable, Serializable {
 	@API(status = STABLE, since = "1.1")
 	public final UniqueId append(Segment segment) {
 		Preconditions.notNull(segment, "segment must not be null");
-		List<Segment> baseSegments = new ArrayList<>(this.segments);
+		List<Segment> baseSegments = new ArrayList<>(this.segments.size() + 1);
+		baseSegments.addAll(segments);
 		baseSegments.add(segment);
 		return new UniqueId(this.uniqueIdFormat, baseSegments);
 	}
@@ -250,9 +251,11 @@ public class UniqueId implements Cloneable, Serializable {
 	 */
 	@Override
 	public String toString() {
-		String s = this.toString;
-		if (s == null) {
-			s = this.uniqueIdFormat.format(this);
+		SoftReference<String> s = this.toString;
+		String value = s == null ? null : s.get();
+		if (value == null) {
+			UniqueIdFormat format = this.uniqueIdFormat == null ? UniqueIdFormat.getDefault() : this.uniqueIdFormat;
+			value = format.format(this);
 			// this is a benign race like String#hash
 			// we potentially read and write values from multiple threads
 			// without a happens-before relationship
@@ -260,9 +263,9 @@ public class UniqueId implements Cloneable, Serializable {
 			// that were valid at one point, either null or the toString value
 			// so we might end up not seeing a value that a different thread
 			// has computed or multiple threads writing the same value
-			this.toString = s;
+			this.toString = new SoftReference<>(value);
 		}
-		return s;
+		return value;
 	}
 
 	/**

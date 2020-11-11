@@ -16,8 +16,10 @@ import static org.junit.platform.engine.TestExecutionResult.failed;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CancellationException;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Future;
 
@@ -29,6 +31,7 @@ import org.junit.platform.commons.util.Preconditions;
 import org.junit.platform.commons.util.UnrecoverableExceptions;
 import org.junit.platform.engine.EngineExecutionListener;
 import org.junit.platform.engine.TestDescriptor;
+import org.junit.platform.engine.UniqueId;
 import org.junit.platform.engine.support.hierarchical.HierarchicalTestExecutorService.TestTask;
 import org.junit.platform.engine.support.hierarchical.Node.DynamicTestExecutor;
 import org.junit.platform.engine.support.hierarchical.Node.ExecutionMode;
@@ -184,8 +187,14 @@ class NodeTestTask<C extends EngineExecutionContext> implements TestTask {
 		throwableCollector = null;
 	}
 
+	private interface DynamicTaskState {
+		DynamicTaskState UNSCHEDULED = () -> {
+		};
+		void awaitFinished() throws CancellationException, ExecutionException, InterruptedException;
+	}
+
 	private class DefaultDynamicTestExecutor implements DynamicTestExecutor {
-		private final List<Future<?>> futures = new ArrayList<>();
+		private final Map<UniqueId, DynamicTaskState> taskState = new ConcurrentHashMap<>();
 
 		@Override
 		public void execute(TestDescriptor testDescriptor) {
@@ -209,17 +218,39 @@ class NodeTestTask<C extends EngineExecutionContext> implements TestTask {
 				NodeTestTask<C> nodeTestTask = new NodeTestTask<>(taskContext.withListener(executionListener),
 					testDescriptor);
 				nodeTestTask.setParentContext(context);
-				Future<?> future = taskContext.getExecutorService().submit(nodeTestTask);
-				futures.add(future);
+				UniqueId uniqueId = testDescriptor.getUniqueId();
+				taskState.put(uniqueId, DynamicTaskState.UNSCHEDULED);
+				Future<Void> future = taskContext.getExecutorService().submit(new TestTask() {
+					@Override
+					public ExecutionMode getExecutionMode() {
+						return nodeTestTask.getExecutionMode();
+					}
+
+					@Override
+					public ResourceLock getResourceLock() {
+						return nodeTestTask.getResourceLock();
+					}
+
+					@Override
+					public void execute() {
+						try {
+							nodeTestTask.execute();
+						}
+						finally {
+							taskState.remove(uniqueId);
+						}
+					}
+				});
+				taskState.computeIfPresent(uniqueId, (__, state) -> future::get);
 				return future;
 			}
 		}
 
 		@Override
 		public void awaitFinished() throws InterruptedException {
-			for (Future<?> future : futures) {
+			for (DynamicTaskState state : taskState.values()) {
 				try {
-					future.get();
+					state.awaitFinished();
 				}
 				catch (CancellationException ignore) {
 					// Futures returned by execute() may have been cancelled
